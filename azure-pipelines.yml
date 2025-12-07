@@ -1,144 +1,179 @@
 # ==========================================================
-#  PIPELINE CONFIGURATION
+#  FILE: backend0123/azure-pipelines.yml
 # ==========================================================
-# File: backend0123/azure-pipelines.yml
 
-# Trigger on changes in THIS repo (backend0123)
+# Trigger for pipeline repo itself (optional)
 trigger:
   branches:
     include:
-      - develop
       - main
       - master
-      - dev
-      - qa
-      - prod
+  paths:
+    include:
+      - '**'
 
 # ==========================================================
-#  EXTERNAL SOURCE CODE REPOSITORY
+#  EXTERNAL REPO CONFIGURATION
 # ==========================================================
 resources:
   repositories:
-    - repository: sourcecode  # Alias for reference
+    - repository: azure-backend-pipeline1  # Alias for the source repo
       type: github
-      name: bmahe1/azure-backend-pipeline1  # Your source repo
-      ref: refs/heads/$(Build.SourceBranchName)  # Match pipeline branch
+      name: azure-backend-pipeline1  # Your source repo
       endpoint: bmahe1  # GitHub service connection
-      # ⭐ CRITICAL: This makes pipeline trigger on source repo changes
+      
+      # ⭐ CRITICAL: This MUST be a specific branch, NOT variable
+      ref: refs/heads/main  # Or 'master' - FIXED branch
+      
+      # ⭐ CRITICAL: Add trigger here to watch source repo
       trigger:
         branches:
           include:
-            - develop
             - main
             - master
-            - dev
-            - qa
-            - prod
+        paths:
+          include:
+            - '**'
+        # ⭐ ADD THIS to sync pipeline branch with source branch
+        tags:
+          - refs/tags/*
 
 # ==========================================================
-#  VARIABLES
+#  DYNAMIC VARIABLES BASED ON TRIGGERING REPO
 # ==========================================================
 variables:
+  # Common variables
   dockerRegistryServiceConnection: 'docker-external'
-  dockerHubRepository: 'maheshbmahesh/azure-backend'
   dockerfilePath: 'backend/Dockerfile'
-  tag: '$(Build.BuildId)'
   imagePullSecret: 'testfourids-auth'
+  
+  # Determine which repo triggered
+  - name: triggeringRepo
+    ${{ if eq(variables['Build.Reason'], 'ResourceTrigger') }}:
+      value: 'sourcecode'
+    ${{ else }}:
+      value: 'self'
+  
+  # Set Docker Hub repo based on triggering branch
+  - name: dockerHubRepository
+    ${{ if eq(variables['Build.SourceBranchName'], 'main') }}:
+      value: 'maheshbmahesh/azure-backend-prod'
+    ${{ elseif eq(variables['Build.SourceBranchName'], 'master') }}:
+      value: 'maheshbmahesh/azure-backend-staging'
+    ${{ else }}:
+      value: 'maheshbmahesh/azure-backend-dev'
+  
+  - name: tag
+    value: '$(Build.SourceBranchName)-$(Build.BuildId)'
 
 # ==========================================================
-#  STAGE 1 — BUILD + SCAN + PUSH
+#  STAGE 1 — BUILD
 # ==========================================================
 stages:
 - stage: Build
-  displayName: 'Build, Scan & Push'
+  displayName: 'Build from $(triggeringRepo)'
   jobs:
   - job: BuildJob
     pool: 'my-agent-0vm'
     steps:
-      # ⭐ STEP 1: Checkout source code from azure-backend-pipeline1
+    
+    # ⭐ STEP 1: ALWAYS checkout pipeline repo first
+    - checkout: self
+      displayName: 'Checkout pipeline definitions'
+      path: s/pipelines
+    
+    # ⭐ STEP 2: Checkout source code IF triggered by source repo
+    - ${{ if eq(variables.triggeringRepo, 'sourcecode') }}:
       - checkout: sourcecode
         displayName: 'Checkout source code from azure-backend-pipeline1'
         path: s/source
-      
-      # ⭐ DEBUG: Verify checkout
-      - script: |
-          echo "=== DEBUG: What was checked out? ==="
-          echo "Pipeline triggered by: $(Build.Reason)"
-          echo "Triggering repo: $(Build.Repository.Name)"
-          echo "Source repo checked out to: $(Pipeline.Workspace)/s/source"
-          echo "Files in source repo:"
-          ls -la $(Pipeline.Workspace)/s/source/
-          echo "=== END DEBUG ==="
-        displayName: 'Debug: Verify Source Code Checkout'
-      
-      # Maven Build
-      - task: Maven@4
-        displayName: 'Maven Build'
-        inputs:
-          mavenPomFile: 's/source/pom.xml'
-          goals: 'clean install -DskipTests=true'
-      
-      # Build Docker image locally
-      - task: Docker@2
-        displayName: 'Build Docker Image'
-        inputs:
-          command: build
-          repository: 'azure-backend-local'
-          dockerfile: 's/source/$(dockerfilePath)'
-          tags: |
-            $(tag)
-          buildContext: 's/source'
-      
-      # Install Trivy
-      - task: Bash@3
-        displayName: 'Install Trivy'
-        inputs:
-          targetType: inline
-          script: |
-            curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
-      
-      # Run Trivy Scan
-      - task: Bash@3
-        displayName: 'Security Scan with Trivy'
-        inputs:
-          targetType: inline
-          script: |
-            ./bin/trivy image --severity HIGH,CRITICAL,MEDIUM --ignore-unfixed azure-backend-local:$(tag)
-      
-      # Push Docker image to Docker Hub
-      - task: Docker@2
-        displayName: 'Push to Docker Hub'
-        inputs:
-          command: buildAndPush
-          repository: $(dockerHubRepository)
-          dockerfile: 's/source/$(dockerfilePath)'
-          containerRegistry: $(dockerRegistryServiceConnection)
-          tags: |
-            $(tag)
-          buildContext: 's/source'
-      
-      # Publish manifests
-      - task: PublishPipelineArtifact@1
-        displayName: 'Publish K8s Manifests'
-        inputs:
-          targetPath: 's/source/deployment/base'
-          artifact: 'deployment-base'
-      
-      # Final status
-      - script: |
-          echo "✅ BUILD COMPLETE"
-          echo "Source: azure-backend-pipeline1 ($(Build.SourceBranchName))"
-          echo "Image: $(dockerHubRepository):$(tag)"
-          echo "Pipeline: backend0123"
-        displayName: 'Build Complete'
+    
+    # ⭐ STEP 3: Debug - show what triggered
+    - script: |
+        echo "=========================================="
+        echo "PIPELINE TRIGGER DEBUG"
+        echo "=========================================="
+        echo "Build Reason: $(Build.Reason)"
+        echo "Source Branch: $(Build.SourceBranch)"
+        echo "Source Branch Name: $(Build.SourceBranchName)"
+        echo "Triggering Repo: $(triggeringRepo)"
+        echo "Repository Name: $(Build.Repository.Name)"
+        echo "Resources.TriggeringAlias: $(Resources.TriggeringAlias)"
+        echo "=========================================="
+        echo "Checking source code location:"
+        if [ -d "s/source" ]; then
+          echo "✅ Source code found at: s/source"
+          ls -la s/source/
+        else
+          echo "⚠️ No source code directory found"
+        fi
+        echo "=========================================="
+      displayName: 'Debug Trigger Information'
+    
+    # Maven Build (from source directory)
+    - task: Maven@4
+      displayName: 'Maven Build'
+      inputs:
+        mavenPomFile: 's/source/pom.xml'
+        goals: 'clean install -DskipTests=true'
+      condition: eq(variables.triggeringRepo, 'sourcecode')
+    
+    # Docker Build (from source directory)
+    - task: Docker@2
+      displayName: 'Build Docker Image'
+      inputs:
+        command: build
+        repository: 'azure-backend-local'
+        dockerfile: 's/source/$(dockerfilePath)'
+        tags: |
+          $(tag)
+        buildContext: 's/source'
+      condition: eq(variables.triggeringRepo, 'sourcecode')
+    
+    # Trivy Scan
+    - task: Bash@3
+      displayName: 'Install Trivy'
+      inputs:
+        targetType: inline
+        script: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
+    
+    - task: Bash@3
+      displayName: 'Security Scan with Trivy'
+      inputs:
+        targetType: inline
+        script: |
+          ./bin/trivy image --severity HIGH,CRITICAL,MEDIUM --ignore-unfixed azure-backend-local:$(tag)
+      condition: eq(variables.triggeringRepo, 'sourcecode')
+    
+    # Push to Docker Hub
+    - task: Docker@2
+      displayName: 'Push to Docker Hub'
+      inputs:
+        command: buildAndPush
+        repository: $(dockerHubRepository)
+        dockerfile: 's/source/$(dockerfilePath)'
+        containerRegistry: $(dockerRegistryServiceConnection)
+        tags: |
+          $(tag)
+        buildContext: 's/source'
+      condition: eq(variables.triggeringRepo, 'sourcecode')
+    
+    # Publish manifests
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish K8s Manifests'
+      inputs:
+        targetPath: 's/source/deployment/base'
+        artifact: 'deployment-base'
+      condition: eq(variables.triggeringRepo, 'sourcecode')
 
 # ==========================================================
 #  STAGE 2 — DEPLOYMENT
 # ==========================================================
 - stage: Deploy
-  displayName: 'Deploy to Environment'
+  displayName: 'Deploy'
   dependsOn: Build
-  condition: succeeded()
+  condition: and(succeeded(), eq(variables.triggeringRepo, 'sourcecode'))
   jobs:
   - deployment: DeployJob
     environment: 'TestFourids'
@@ -147,14 +182,11 @@ stages:
       runOnce:
         deploy:
           steps:
-            # Download manifests
             - task: DownloadPipelineArtifact@2
-              displayName: 'Download K8s Manifests'
               inputs:
                 artifact: 'deployment-base'
                 path: '$(Pipeline.Workspace)/deployment/base'
             
-            # Create Docker pull secret
             - task: KubernetesManifest@0
               displayName: 'Create Docker Secret'
               inputs:
@@ -163,7 +195,6 @@ stages:
                 secretName: $(imagePullSecret)
                 dockerRegistryEndpoint: $(dockerRegistryServiceConnection)
             
-            # Deploy to Kubernetes
             - task: KubernetesManifest@0
               displayName: 'Deploy to Kubernetes'
               inputs:
