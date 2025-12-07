@@ -1,7 +1,9 @@
 # ==========================================================
-#  PIPELINE TRIGGERS
+#  PIPELINE CONFIGURATION
 # ==========================================================
-# Trigger for changes in this Azure DevOps repo (self)
+# File: backend0123/azure-pipelines.yml
+
+# Trigger on changes in THIS repo (backend0123)
 trigger:
   branches:
     include:
@@ -13,20 +15,22 @@ trigger:
       - prod
 
 # ==========================================================
-#  EXTERNAL REPOSITORY (Backend GitHub)
+#  EXTERNAL SOURCE CODE REPOSITORY
 # ==========================================================
 resources:
   repositories:
-    - repository: backendrepo           # alias
+    - repository: sourcecode  # Alias for reference
       type: github
-      name: bmahe1/azure-backend-pipeline1
-      ref: refs/heads/main
-      endpoint: github.com_bmahe1               # GitHub service connection
+      name: bmahe1/azure-backend-pipeline1  # Your source repo
+      ref: refs/heads/$(Build.SourceBranchName)  # Match pipeline branch
+      endpoint: bmahe1  # GitHub service connection
+      # ⭐ CRITICAL: This makes pipeline trigger on source repo changes
       trigger:
         branches:
           include:
-            - main
             - develop
+            - main
+            - master
             - dev
             - qa
             - prod
@@ -46,32 +50,45 @@ variables:
 # ==========================================================
 stages:
 - stage: Build
-  displayName: Build, Scan & Push
+  displayName: 'Build, Scan & Push'
   jobs:
   - job: BuildJob
     pool: 'my-agent-0vm'
     steps:
-      # Checkout backend code from GitHub
-      - checkout: backendrepo
-        displayName: 'Checkout backend source code'
-
+      # ⭐ STEP 1: Checkout source code from azure-backend-pipeline1
+      - checkout: sourcecode
+        displayName: 'Checkout source code from azure-backend-pipeline1'
+        path: s/source
+      
+      # ⭐ DEBUG: Verify checkout
+      - script: |
+          echo "=== DEBUG: What was checked out? ==="
+          echo "Pipeline triggered by: $(Build.Reason)"
+          echo "Triggering repo: $(Build.Repository.Name)"
+          echo "Source repo checked out to: $(Pipeline.Workspace)/s/source"
+          echo "Files in source repo:"
+          ls -la $(Pipeline.Workspace)/s/source/
+          echo "=== END DEBUG ==="
+        displayName: 'Debug: Verify Source Code Checkout'
+      
       # Maven Build
       - task: Maven@4
+        displayName: 'Maven Build'
         inputs:
-          mavenPomFile: 'pom.xml'
+          mavenPomFile: 's/source/pom.xml'
           goals: 'clean install -DskipTests=true'
-
+      
       # Build Docker image locally
       - task: Docker@2
-        displayName: 'Build Docker image'
+        displayName: 'Build Docker Image'
         inputs:
           command: build
           repository: 'azure-backend-local'
-          dockerfile: $(dockerfilePath)
+          dockerfile: 's/source/$(dockerfilePath)'
           tags: |
             $(tag)
-          buildContext: '.'
-
+          buildContext: 's/source'
+      
       # Install Trivy
       - task: Bash@3
         displayName: 'Install Trivy'
@@ -79,7 +96,7 @@ stages:
           targetType: inline
           script: |
             curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
-
+      
       # Run Trivy Scan
       - task: Bash@3
         displayName: 'Security Scan with Trivy'
@@ -87,32 +104,41 @@ stages:
           targetType: inline
           script: |
             ./bin/trivy image --severity HIGH,CRITICAL,MEDIUM --ignore-unfixed azure-backend-local:$(tag)
-
+      
       # Push Docker image to Docker Hub
       - task: Docker@2
-        displayName: 'Push image to Docker Hub'
+        displayName: 'Push to Docker Hub'
         inputs:
           command: buildAndPush
           repository: $(dockerHubRepository)
-          dockerfile: $(dockerfilePath)
+          dockerfile: 's/source/$(dockerfilePath)'
           containerRegistry: $(dockerRegistryServiceConnection)
           tags: |
             $(tag)
-          buildContext: '.'
-
+          buildContext: 's/source'
+      
       # Publish manifests
       - task: PublishPipelineArtifact@1
         displayName: 'Publish K8s Manifests'
         inputs:
-          targetPath: '$(Build.SourcesDirectory)/deployment/base'
+          targetPath: 's/source/deployment/base'
           artifact: 'deployment-base'
+      
+      # Final status
+      - script: |
+          echo "✅ BUILD COMPLETE"
+          echo "Source: azure-backend-pipeline1 ($(Build.SourceBranchName))"
+          echo "Image: $(dockerHubRepository):$(tag)"
+          echo "Pipeline: backend0123"
+        displayName: 'Build Complete'
 
 # ==========================================================
-#  STAGE 2 — DEPLOYMENT FOR DEV / QA / PROD
+#  STAGE 2 — DEPLOYMENT
 # ==========================================================
 - stage: Deploy
-  displayName: Deploy to Environment
+  displayName: 'Deploy to Environment'
   dependsOn: Build
+  condition: succeeded()
   jobs:
   - deployment: DeployJob
     environment: 'TestFourids'
@@ -121,13 +147,13 @@ stages:
       runOnce:
         deploy:
           steps:
-
             # Download manifests
             - task: DownloadPipelineArtifact@2
+              displayName: 'Download K8s Manifests'
               inputs:
                 artifact: 'deployment-base'
                 path: '$(Pipeline.Workspace)/deployment/base'
-
+            
             # Create Docker pull secret
             - task: KubernetesManifest@0
               displayName: 'Create Docker Secret'
@@ -136,11 +162,10 @@ stages:
                 action: createSecret
                 secretName: $(imagePullSecret)
                 dockerRegistryEndpoint: $(dockerRegistryServiceConnection)
-
-            # DEV Deployment
+            
+            # Deploy to Kubernetes
             - task: KubernetesManifest@0
-              displayName: 'Deploy to DEV'
-              condition: or(eq(variables['Build.SourceBranchName'], 'dev'), eq(variables['Build.SourceBranchName'], 'develop'))
+              displayName: 'Deploy to Kubernetes'
               inputs:
                 kubernetesServiceConnection: 'cluster2'
                 action: deploy
@@ -148,33 +173,7 @@ stages:
                   $(Pipeline.Workspace)/deployment/base/configmap.yaml
                   $(Pipeline.Workspace)/deployment/base/deployment.yaml
                   $(Pipeline.Workspace)/deployment/base/service.yaml
-                containers: |
-                  $(dockerHubRepository):$(tag)
-
-            # QA Deployment
-            - task: KubernetesManifest@0
-              displayName: 'Deploy to QA'
-              condition: eq(variables['Build.SourceBranchName'], 'qa')
-              inputs:
-                kubernetesServiceConnection: 'cluster2'
-                action: deploy
-                manifests: |
-                  $(Pipeline.Workspace)/deployment/base/configmap.yaml
-                  $(Pipeline.Workspace)/deployment/base/deployment.yaml
-                  $(Pipeline.Workspace)/deployment/base/service.yaml
-                containers: |
-                  $(dockerHubRepository):$(tag)
-
-            # PROD Deployment
-            - task: KubernetesManifest@0
-              displayName: 'Deploy to PROD'
-              condition: eq(variables['Build.SourceBranchName'], 'prod')
-              inputs:
-                kubernetesServiceConnection: 'cluster2'
-                action: deploy
-                manifests: |
-                  $(Pipeline.Workspace)/deployment/base/configmap.yaml
-                  $(Pipeline.Workspace)/deployment/base/deployment.yaml
-                  $(Pipeline.Workspace)/deployment/base/service.yaml
+                imagePullSecrets: |
+                  $(imagePullSecret)
                 containers: |
                   $(dockerHubRepository):$(tag)
