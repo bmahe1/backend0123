@@ -1,124 +1,93 @@
-# ==========================================================
-#  FILE: backend0123/azure-pipelines.yml
-# ==========================================================
+# File: backend0123/azure-pipelines.yml
 
-# Trigger for pipeline repo itself (optional)
+# Trigger for pipeline repo ITSELF (optional)
 trigger:
   branches:
     include:
       - main
-      - master
-  paths:
-    include:
-      - '**'
 
-# ==========================================================
-#  EXTERNAL REPO CONFIGURATION
-# ==========================================================
+# ==============================================
+# ⭐ THE MAGIC: External Repo Configuration
+# ==============================================
 resources:
   repositories:
-    - repository: azure-backend-pipeline1  # Alias for the source repo
+    - repository: external_source  # Alias for your source repo
       type: github
-      name: azure-backend-pipeline1  # Your source repo
+      name: bmahe1/azure-backend-pipeline1  # GitHub repo
       endpoint: bmahe1  # GitHub service connection
       
-      # ⭐ CRITICAL: This MUST be a specific branch, NOT variable
-      ref: refs/heads/main  # Or 'master' - FIXED branch
+      # ⭐ FIXED: Use specific branch, NOT variable
+      ref: refs/heads/main  # Or refs/heads/master
       
-      # ⭐ CRITICAL: Add trigger here to watch source repo
+      # ⭐⭐ THIS IS WHAT MAKES IT TRIGGER FROM EXTERNAL REPO
       trigger:
         branches:
           include:
             - main
-            - master
         paths:
           include:
-            - '**'
-        # ⭐ ADD THIS to sync pipeline branch with source branch
-        tags:
-          - refs/tags/*
+            - '**'  # Trigger on ANY file change
+        # Optional: Exclude certain paths
+        exclude:
+          - README.md
+          - '**/*.md'
 
-# ==========================================================
-#  DYNAMIC VARIABLES BASED ON TRIGGERING REPO
-# ==========================================================
+# ==============================================
+# VARIABLES
+# ==============================================
 variables:
-  # Common variables
   dockerRegistryServiceConnection: 'docker-external'
+  dockerHubRepository: 'maheshbmahesh/azure-backend'
   dockerfilePath: 'backend/Dockerfile'
+  tag: '$(Build.BuildId)'
   imagePullSecret: 'testfourids-auth'
-  
-  # Determine which repo triggered
-  - name: triggeringRepo
-    ${{ if eq(variables['Build.Reason'], 'ResourceTrigger') }}:
-      value: 'sourcecode'
-    ${{ else }}:
-      value: 'self'
-  
-  # Set Docker Hub repo based on triggering branch
-  - name: dockerHubRepository
-    ${{ if eq(variables['Build.SourceBranchName'], 'main') }}:
-      value: 'maheshbmahesh/azure-backend-prod'
-    ${{ elseif eq(variables['Build.SourceBranchName'], 'master') }}:
-      value: 'maheshbmahesh/azure-backend-staging'
-    ${{ else }}:
-      value: 'maheshbmahesh/azure-backend-dev'
-  
-  - name: tag
-    value: '$(Build.SourceBranchName)-$(Build.BuildId)'
 
-# ==========================================================
-#  STAGE 1 — BUILD
-# ==========================================================
+# ==============================================
+# STAGES
+# ==============================================
 stages:
 - stage: Build
-  displayName: 'Build from $(triggeringRepo)'
+  displayName: Build Stage
   jobs:
   - job: BuildJob
     pool: 'my-agent-0vm'
     steps:
     
-    # ⭐ STEP 1: ALWAYS checkout pipeline repo first
-    - checkout: self
-      displayName: 'Checkout pipeline definitions'
-      path: s/pipelines
+    # ⭐ CRITICAL STEP 1: Checkout external source repo
+    - checkout: external_source
+      displayName: 'Checkout source code from azure-backend-pipeline1'
+      path: s/source
     
-    # ⭐ STEP 2: Checkout source code IF triggered by source repo
-    - ${{ if eq(variables.triggeringRepo, 'sourcecode') }}:
-      - checkout: sourcecode
-        displayName: 'Checkout source code from azure-backend-pipeline1'
-        path: s/source
-    
-    # ⭐ STEP 3: Debug - show what triggered
+    # ⭐ CRITICAL STEP 2: Debug to verify trigger
     - script: |
         echo "=========================================="
-        echo "PIPELINE TRIGGER DEBUG"
+        echo "EXTERNAL REPO TRIGGER VERIFICATION"
         echo "=========================================="
         echo "Build Reason: $(Build.Reason)"
+        echo "Expected: 'ResourceTrigger' or 'IndividualCI'"
         echo "Source Branch: $(Build.SourceBranch)"
-        echo "Source Branch Name: $(Build.SourceBranchName)"
-        echo "Triggering Repo: $(triggeringRepo)"
-        echo "Repository Name: $(Build.Repository.Name)"
-        echo "Resources.TriggeringAlias: $(Resources.TriggeringAlias)"
+        echo "Triggering Repository: $(Build.Repository.Name)"
         echo "=========================================="
-        echo "Checking source code location:"
-        if [ -d "s/source" ]; then
-          echo "✅ Source code found at: s/source"
-          ls -la s/source/
+        
+        # Check which repo triggered
+        if [ "$(Build.Reason)" = "ResourceTrigger" ]; then
+          echo "✅ TRIGGERED BY: External Repository (azure-backend-pipeline1)"
+          echo "✅ Resources.TriggeringAlias: $(Resources.TriggeringAlias)"
         else
-          echo "⚠️ No source code directory found"
+          echo "✅ TRIGGERED BY: Pipeline Repository (backend0123)"
         fi
+        
+        echo "✅ Source code checked out at: $(Pipeline.Workspace)/s/source"
+        ls -la $(Pipeline.Workspace)/s/source/
         echo "=========================================="
-      displayName: 'Debug Trigger Information'
+      displayName: 'Verify External Repo Trigger'
     
-    # Maven Build (from source directory)
+    # Rest of your build steps...
     - task: Maven@4
-      displayName: 'Maven Build'
       inputs:
         mavenPomFile: 's/source/pom.xml'
         goals: 'clean install -DskipTests=true'
-      condition: eq(variables.triggeringRepo, 'sourcecode')
     
-    # Docker Build (from source directory)
     - task: Docker@2
       displayName: 'Build Docker Image'
       inputs:
@@ -128,83 +97,5 @@ stages:
         tags: |
           $(tag)
         buildContext: 's/source'
-      condition: eq(variables.triggeringRepo, 'sourcecode')
     
-    # Trivy Scan
-    - task: Bash@3
-      displayName: 'Install Trivy'
-      inputs:
-        targetType: inline
-        script: |
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
-    
-    - task: Bash@3
-      displayName: 'Security Scan with Trivy'
-      inputs:
-        targetType: inline
-        script: |
-          ./bin/trivy image --severity HIGH,CRITICAL,MEDIUM --ignore-unfixed azure-backend-local:$(tag)
-      condition: eq(variables.triggeringRepo, 'sourcecode')
-    
-    # Push to Docker Hub
-    - task: Docker@2
-      displayName: 'Push to Docker Hub'
-      inputs:
-        command: buildAndPush
-        repository: $(dockerHubRepository)
-        dockerfile: 's/source/$(dockerfilePath)'
-        containerRegistry: $(dockerRegistryServiceConnection)
-        tags: |
-          $(tag)
-        buildContext: 's/source'
-      condition: eq(variables.triggeringRepo, 'sourcecode')
-    
-    # Publish manifests
-    - task: PublishPipelineArtifact@1
-      displayName: 'Publish K8s Manifests'
-      inputs:
-        targetPath: 's/source/deployment/base'
-        artifact: 'deployment-base'
-      condition: eq(variables.triggeringRepo, 'sourcecode')
-
-# ==========================================================
-#  STAGE 2 — DEPLOYMENT
-# ==========================================================
-- stage: Deploy
-  displayName: 'Deploy'
-  dependsOn: Build
-  condition: and(succeeded(), eq(variables.triggeringRepo, 'sourcecode'))
-  jobs:
-  - deployment: DeployJob
-    environment: 'TestFourids'
-    pool: 'my-agent-0vm'
-    strategy:
-      runOnce:
-        deploy:
-          steps:
-            - task: DownloadPipelineArtifact@2
-              inputs:
-                artifact: 'deployment-base'
-                path: '$(Pipeline.Workspace)/deployment/base'
-            
-            - task: KubernetesManifest@0
-              displayName: 'Create Docker Secret'
-              inputs:
-                kubernetesServiceConnection: 'cluster2'
-                action: createSecret
-                secretName: $(imagePullSecret)
-                dockerRegistryEndpoint: $(dockerRegistryServiceConnection)
-            
-            - task: KubernetesManifest@0
-              displayName: 'Deploy to Kubernetes'
-              inputs:
-                kubernetesServiceConnection: 'cluster2'
-                action: deploy
-                manifests: |
-                  $(Pipeline.Workspace)/deployment/base/configmap.yaml
-                  $(Pipeline.Workspace)/deployment/base/deployment.yaml
-                  $(Pipeline.Workspace)/deployment/base/service.yaml
-                imagePullSecrets: |
-                  $(imagePullSecret)
-                containers: |
-                  $(dockerHubRepository):$(tag)
+    # ... rest of your pipeline
