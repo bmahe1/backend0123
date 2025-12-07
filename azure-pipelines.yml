@@ -21,7 +21,7 @@ resources:
       type: github
       name: bmahe1/azure-backend-pipeline1
       ref: refs/heads/main
-      endpoint: bmahe1                 # GitHub service connection
+      endpoint: github.com_bmahe1               # GitHub service connection
       trigger:
         branches:
           include:
