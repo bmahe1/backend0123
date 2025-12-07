@@ -16,8 +16,9 @@ resources:
     - repository: backendrepo
       type: github
       name: bmahe1/azure-backend-pipeline1
-      ref: refs/heads/$(Build.SourceBranchName)
-      endpoint: bmahe1   # Replace with your GitHub service connection name
+      ref: refs/heads/main
+      endpoint: bmahe1
+
 
 # ==========================================================
 #  VARIABLES
